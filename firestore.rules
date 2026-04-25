@@ -1,0 +1,62 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // User Profiles
+    match /users/{userId} {
+      function isValidUser(data) {
+        return data.keys().hasAll(['uid', 'email']) &&
+               data.uid is string && data.uid.size() <= 128 &&
+               data.email is string && data.email.size() <= 256;
+      }
+
+      allow get: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if isOwner(userId) && isValidUser(request.resource.data) &&
+                    request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'photoURL', 'addresses', 'selectedAddressIndex', 'phone']);
+    }
+
+    // Orders
+    match /orders/{orderId} {
+      function isValidOrder(data) {
+        return data.keys().hasAll(['userId', 'restaurantId', 'total', 'status', 'createdAt']) &&
+               data.userId == request.auth.uid &&
+               data.total is number && data.total >= 0 &&
+               data.status in ['pending', 'preparing', 'on-the-way', 'delivered', 'cancelled'] &&
+               data.createdAt == request.time;
+      }
+
+      // Allow users to see their own orders
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow get: if isSignedIn() && resource.data.userId == request.auth.uid;
+      
+      // Creating an order
+      allow create: if isSignedIn() && isValidOrder(request.resource.data);
+      
+      // For this app, only status updates are allowed by the user (e.g. cancelling if pending)
+      // In a real system, a driver or restaurant service would update other statuses.
+      allow update: if isSignedIn() && resource.data.userId == request.auth.uid &&
+                    request.resource.data.status == 'cancelled' &&
+                    resource.data.status == 'pending' &&
+                    request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']);
+    }
+  }
+}
